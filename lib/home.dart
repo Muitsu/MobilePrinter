@@ -1,8 +1,8 @@
-import 'dart:developer';
-
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:mobile_printer/printer_service.dart';
-import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
+// import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
@@ -13,20 +13,23 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final printerService = PrinterService();
-  List<BluetoothInfo> bluetoothDevices = [];
+  // At the top of your class
+  StreamSubscription<List<BluetoothDevice>>? _deviceSubscription;
+  List<BluetoothDevice> _devices = [];
+
   @override
   void initState() {
     super.initState();
-    printerService.getPairedDevices().then((devices) {
+    _deviceSubscription = printerService.scanDevices().listen((devices) {
       setState(() {
-        bluetoothDevices = devices;
+        _devices = devices;
       });
-      log('Paired devices: $devices');
     });
   }
 
   @override
   void dispose() {
+    _deviceSubscription?.cancel();
     super.dispose();
   }
 
@@ -37,23 +40,23 @@ class _MyHomePageState extends State<MyHomePage> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       ),
       body: ListView.builder(
-        itemCount: bluetoothDevices.length,
+        itemCount: _devices.length,
         itemBuilder: (context, index) {
-          final printer = bluetoothDevices[index];
+          final printer = _devices[index];
           return ListTile(
-            title: Text(printer.name),
-            subtitle: Text(" ${printer.macAdress}"),
+            title: Text(printer.advName),
+            subtitle: Text(" ${printer.remoteId.str}"),
             onTap: () async {
               if (await printerService.isConnected) {
                 await printerService.disconnect();
               } else {
-                await printerService.connect(printer.macAdress);
+                await printerService.connect(printer);
               }
             },
             trailing: IconButton(
               icon: const Icon(Icons.print),
               onPressed: () async {
-                await printerService.printTestReceipt();
+                await printerService.testTicket();
               },
             ),
           );

@@ -1,109 +1,205 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:developer';
+import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 
-/// A class that acts as a wrapper for the print_bluetooth_thermal package.
-///
-/// This class simplifies the process of interacting with a Bluetooth thermal printer
-/// by providing a high-level API for common tasks like connecting, disconnecting,
-/// and printing. It handles the underlying package calls and provides a
-/// more convenient interface.
 class PrinterService {
   static final PrinterService _instance = PrinterService._internal();
 
-  factory PrinterService() {
-    return _instance;
-  }
+  factory PrinterService() => _instance;
 
   PrinterService._internal();
 
-  /// Checks if a printer is currently connected.
-  Future<bool> get isConnected async {
-    bool permission = await PrintBluetoothThermal.isPermissionBluetoothGranted;
-    debugPrint('Have permission? $permission');
-    return await PrintBluetoothThermal.connectionStatus;
+  final List<BluetoothDevice> _devices = [];
+  var logger = (String msg) => log(name: "PrinterService", msg);
+
+  /// The saved device (only one at a time)
+  BluetoothDevice? _savedPrinter;
+
+  /// Returns the currently saved printer (if any)
+  BluetoothDevice? get savedPrinter => _savedPrinter;
+  Stream<List<BluetoothDevice>> scanDevices({
+    Duration timeout = const Duration(seconds: 5),
+  }) async* {
+    await ensureBluetoothOn();
+    await FlutterBluePlus.stopScan();
+
+    _devices.clear();
+    await FlutterBluePlus.startScan(timeout: timeout);
+
+    yield* FlutterBluePlus.scanResults.map((results) {
+      for (var r in results) {
+        if (!_devices.any((d) => d.remoteId == r.device.remoteId)) {
+          final dName = r.device.advName;
+          if (dName.isEmpty) continue;
+          _devices.add(r.device);
+          logger('Device: ${r.device.advName} found');
+        }
+      }
+      return List<BluetoothDevice>.from(_devices);
+    });
   }
 
-  Future<List<BluetoothInfo>> getPairedDevices() async {
-    try {
-      final List<BluetoothInfo> devices =
-          await PrintBluetoothThermal.pairedBluetooths;
-      return devices;
-    } catch (e) {
-      debugPrint('Error getting paired devices: $e');
-      return [];
+  Future<void> ensureBluetoothOn() async {
+    // Check support
+    bool supported = await FlutterBluePlus.isSupported;
+    if (!supported) {
+      throw Exception("Bluetooth not supported on this device");
+    }
+
+    // Get current state
+    var state = await FlutterBluePlus.adapterState.first;
+
+    // If off, request user to turn it on
+    if (state != BluetoothAdapterState.on) {
+      await FlutterBluePlus.turnOn();
+      // ^ On Android → shows system dialog asking user to enable
+      // ^ On iOS     → this does nothing (Apple does not allow apps to turn on Bluetooth)
     }
   }
 
-  Future<bool> connect(String macAddress) async {
+  /// Connect to a device
+  Future<bool> connect(BluetoothDevice device) async {
     try {
+      final name = device.advName;
+      final macaddress = device.remoteId.str;
       final bool result = await PrintBluetoothThermal.connect(
-        macPrinterAddress: macAddress,
+        macPrinterAddress: device.remoteId.str,
       );
+      _savedPrinter = device;
       if (result) {
-        debugPrint('Successfully connected to printer with MAC: $macAddress');
+        logger('Connected to printer: $name ($macaddress)');
       } else {
-        debugPrint('Failed to connect to printer with MAC: $macAddress');
+        logger('Failed to connect: $macaddress');
       }
       return result;
     } catch (e) {
-      debugPrint('Error connecting to printer: $e');
+      logger('Error connecting to printer: $e');
       return false;
     }
   }
 
+  Future<bool> get isConnected async {
+    bool permission = await PrintBluetoothThermal.isPermissionBluetoothGranted;
+    logger('Have permission? $permission');
+    return await PrintBluetoothThermal.connectionStatus;
+  }
+
+  /// Disconnect from a device
   Future<bool> disconnect() async {
     try {
       final bool result = await PrintBluetoothThermal.disconnect;
       if (result) {
-        debugPrint('Successfully disconnected from printer');
-      } else {
-        debugPrint('Failed to disconnect from printer');
+        logger('Disconnected printer');
       }
       return result;
     } catch (e) {
-      debugPrint('Error disconnecting from printer: $e');
+      logger('Error disconnecting: $e');
       return false;
     }
   }
 
-  Future<bool> printTestReceipt() async {
-    if (!await isConnected) {
-      debugPrint('Printer is not connected. Cannot print.');
-      return false;
-    }
+  /// Stop scanning (turn off discovery)
+  Future<void> stopScan() async {
+    await FlutterBluePlus.stopScan();
+  }
 
+  Future<bool> testTicket() async {
     try {
       List<int> bytes = [];
+      // Using default profile
+      final profile = await CapabilityProfile.load();
+      final generator = Generator(PaperSize.mm58, profile);
+      //bytes += generator.setGlobalFont(PosFontType.fontA);
+      bytes += generator.reset();
 
-      // Add a header
-      bytes += [27, 97, 1]; // Center align
-      bytes += [27, 33, 16]; // Double height and width
-      bytes += 'Test Receipt'.codeUnits;
-      bytes += [10]; // Line feed
-      bytes += [10]; // Line feed
+      // final ByteData data = await rootBundle.load('assets/mylogo.jpg');
+      // final Uint8List bytesImg = data.buffer.asUint8List();
+      // final image = Imag.decodeImage(bytesImg);
+      // // Using `ESC *`
+      // bytes += generator.image(image!);
 
-      // Reset text style and add body
-      bytes += [27, 33, 0]; // Reset to default
-      bytes += [27, 97, 0]; // Left align
-      bytes += '--------------------------------'.codeUnits;
-      bytes += [10];
-      bytes += 'Item 1: \$10.00'.codeUnits;
-      bytes += [10];
-      bytes += 'Item 2: \$5.50'.codeUnits;
-      bytes += [10];
-      bytes += 'Total: \$15.50'.codeUnits;
-      bytes += [10];
-      bytes += '--------------------------------'.codeUnits;
-      bytes += [10];
-      bytes += [10];
-      bytes += [10];
+      bytes += generator.text(
+        'Regular: aA bB cC dD eE fF gG hH iI jJ kK lL mM nN oO pP qQ rR sS tT uU vV wW xX yY zZ',
+        styles: PosStyles(),
+      );
+      bytes += generator.text(
+        'Special 1: ñÑ àÀ èÈ éÉ üÜ çÇ ôÔ',
+        styles: PosStyles(codeTable: 'CP1252'),
+      );
+      bytes += generator.text(
+        'Special 2: blåbærgrød',
+        styles: PosStyles(codeTable: 'CP1252'),
+      );
+      bytes += generator.hr();
 
-      // Print the bytes
+      bytes += generator.text('Bold text', styles: PosStyles(bold: true));
+      bytes += generator.text('Reverse text', styles: PosStyles(reverse: true));
+      bytes += generator.text(
+        'Underlined text',
+        styles: PosStyles(underline: true),
+        linesAfter: 1,
+      );
+      bytes += generator.text(
+        'Align left',
+        styles: PosStyles(align: PosAlign.left),
+      );
+      bytes += generator.text(
+        'Align center',
+        styles: PosStyles(align: PosAlign.center),
+      );
+      bytes += generator.text(
+        'Align right',
+        styles: PosStyles(align: PosAlign.right),
+        linesAfter: 1,
+      );
+
+      bytes += generator.row([
+        PosColumn(
+          text: 'col3',
+          width: 3,
+          styles: PosStyles(align: PosAlign.center, underline: true),
+        ),
+        PosColumn(
+          text: 'col6',
+          width: 6,
+          styles: PosStyles(align: PosAlign.center, underline: true),
+        ),
+        PosColumn(
+          text: 'col3',
+          width: 3,
+          styles: PosStyles(align: PosAlign.center, underline: true),
+        ),
+      ]);
+
+      //barcode
+      final List<int> barData = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 4];
+      bytes += generator.barcode(Barcode.upcA(barData));
+
+      //QR code
+      bytes += generator.qrcode('example.com');
+
+      bytes += generator.text(
+        'Text size 50%',
+        styles: PosStyles(fontType: PosFontType.fontB),
+      );
+      bytes += generator.text(
+        'Text size 100%',
+        styles: PosStyles(fontType: PosFontType.fontA),
+      );
+      bytes += generator.text(
+        'Text size 200%',
+        styles: PosStyles(height: PosTextSize.size2, width: PosTextSize.size2),
+      );
+
+      bytes += generator.feed(2);
+      //bytes += generator.cut();
       await PrintBluetoothThermal.writeBytes(bytes);
-      debugPrint('Successfully sent print job.');
+      logger('Print job sent');
       return true;
     } catch (e) {
-      debugPrint('Error printing test receipt: $e');
+      logger('Error printing: $e');
       return false;
     }
   }
