@@ -52,10 +52,9 @@ class PrinterService {
     var state = await FlutterBluePlus.adapterState.first;
 
     // If off, request user to turn it on
+    logger('Bluetooth state: $state');
     if (state != BluetoothAdapterState.on) {
       await FlutterBluePlus.turnOn();
-      // ^ On Android → shows system dialog asking user to enable
-      // ^ On iOS     → this does nothing (Apple does not allow apps to turn on Bluetooth)
     }
   }
 

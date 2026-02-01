@@ -20,11 +20,13 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
-    _deviceSubscription = printerService.scanDevices().listen((devices) {
-      setState(() {
-        _devices = devices;
-      });
-    });
+    _deviceSubscription = printerService
+        .scanDevices(timeout: const Duration(seconds: 20))
+        .listen((devices) {
+          setState(() {
+            _devices = devices;
+          });
+        });
   }
 
   @override
