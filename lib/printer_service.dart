@@ -92,6 +92,7 @@ class PrinterService {
       if (result) {
         logger('Disconnected printer');
       }
+      _savedPrinter = null;
       return result;
     } catch (e) {
       logger('Error disconnecting: $e');
@@ -104,7 +105,11 @@ class PrinterService {
     await FlutterBluePlus.stopScan();
   }
 
-  Future<bool> testTicket() async {
+  Future<bool> testPrint() async {
+    if (savedPrinter == null) {
+      logger('No printer connected');
+      return false;
+    }
     try {
       List<int> bytes = [];
       // Using default profile
